@@ -1,0 +1,309 @@
+{
+  "name": "AI-Enabled Fraud Detection Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## AI-Enabled Fraud Detection Workflow\nMirrors the decision architecture: Transaction \u2192 Enrichment \u2192 AI scoring (classifier + graph) \u2192 Decision rule \u2192 AI-enabled action \u2192 Governance log.\n\nBefore running: replace FRAUD_SERVICE_BASE_URL (top of the Enrich and Fraud Scoring nodes) with your deployed service URL, e.g. https://your-app.onrender.com. Payment gateway / auth / Slack URLs are still placeholders \u2014 point them at real or mock endpoints as needed.",
+        "height": 240,
+        "width": 480,
+        "color": 6
+      },
+      "id": "sticky-overview",
+      "name": "Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [200, 60]
+    },
+    {
+      "parameters": {
+        "content": "## Human Oversight & Governance Loop\nOnly the auto-blocked path notifies an analyst. Analyst decisions and confirmed-fraud outcomes should be queued here to retrain the scoring model \u2014 in production, swap the No-Op for an 'Execute Workflow' node calling a separate retraining pipeline.",
+        "height": 200,
+        "width": 420,
+        "color": 6
+      },
+      "id": "sticky-governance",
+      "name": "Governance Loop",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [1740, 700]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "transaction-fraud-check",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Transaction Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 400],
+      "webhookId": "transaction-fraud-check"
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            { "id": "p-txn", "name": "transaction_id", "type": "string", "value": "={{ $json.body.transaction_id }}" },
+            { "id": "p-cust", "name": "customer_id", "type": "string", "value": "={{ $json.body.customer_id }}" },
+            { "id": "p-dev", "name": "device_id", "type": "string", "value": "={{ $json.body.device_id }}" },
+            { "id": "p-ip", "name": "ip_address", "type": "string", "value": "={{ $json.body.ip_address }}" },
+            { "id": "p-merch", "name": "merchant_category", "type": "string", "value": "={{ $json.body.merchant_category }}" },
+            { "id": "p-amt", "name": "amount", "type": "number", "value": "={{ $json.body.amount }}" },
+            { "id": "p-hour", "name": "hour_of_day", "type": "number", "value": "={{ $json.body.hour_of_day }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "parse-transaction",
+      "name": "Parse Incoming Transaction",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [460, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "FRAUD_SERVICE_BASE_URL/enrich",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"transaction_id\": $json.transaction_id, \"customer_id\": $json.customer_id, \"device_id\": $json.device_id, \"ip_address\": $json.ip_address, \"merchant_category\": $json.merchant_category } }}",
+        "options": {}
+      },
+      "id": "enrich-data",
+      "name": "Enrich Customer & Device Data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [680, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "FRAUD_SERVICE_BASE_URL/score",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"transaction_id\": $json.transaction_id, \"amount\": $('Parse Incoming Transaction').item.json.amount, \"hour_of_day\": $('Parse Incoming Transaction').item.json.hour_of_day, \"merchant_risk_score\": $json.merchant_risk_score, \"customer_tenure_days\": $json.customer_tenure_days, \"distance_from_home_km\": $json.distance_from_home_km, \"device_is_new\": $json.device_is_new, \"velocity_24h\": $json.velocity_24h, \"shared_device_count\": $json.shared_device_count, \"ip_risk_score\": $json.ip_risk_score } }}",
+        "options": {}
+      },
+      "id": "fraud-scoring",
+      "name": "Fraud Scoring (Classifier + Graph)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 400]
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            { "id": "assign-score", "name": "fraud_score", "type": "number", "value": "={{ $json.fraud_score }}" },
+            { "id": "assign-txn", "name": "transaction_id", "type": "string", "value": "={{ $json.transaction_id }}" },
+            { "id": "assign-decision", "name": "decision", "type": "string", "value": "={{ $json.decision_hint }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "normalize-score",
+      "name": "Normalize Score",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1120, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "cond-high-risk",
+              "leftValue": "={{ $json.fraud_score }}",
+              "rightValue": 0.7,
+              "operator": { "type": "number", "operation": "gt" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-high-risk",
+      "name": "Is High Risk? (>0.7)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1340, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "cond-medium-risk",
+              "leftValue": "={{ $json.fraud_score }}",
+              "rightValue": 0.3,
+              "operator": { "type": "number", "operation": "gte" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-medium-risk",
+      "name": "Needs Step-Up? (>=0.3)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1560, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://your-payment-gateway.example.com/transactions/approve",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"transaction_id\": $json.transaction_id, \"decision\": \"auto_approve\", \"fraud_score\": $json.fraud_score } }}",
+        "options": {}
+      },
+      "id": "auto-approve",
+      "name": "Auto-Approve Transaction",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1780, 480]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://your-auth-service.example.com/step-up",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"transaction_id\": $json.transaction_id, \"decision\": \"step_up_auth\", \"fraud_score\": $json.fraud_score } }}",
+        "options": {}
+      },
+      "id": "trigger-step-up",
+      "name": "Trigger Step-Up Auth",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1780, 260]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://your-payment-gateway.example.com/transactions/block",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"transaction_id\": $json.transaction_id, \"decision\": \"auto_block\", \"fraud_score\": $json.fraud_score } }}",
+        "options": {}
+      },
+      "id": "auto-block",
+      "name": "Auto-Block & Freeze Card",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1560, 560]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://your-audit-service.example.com/decisions",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"transaction_id\": $('Normalize Score').item.json.transaction_id, \"fraud_score\": $('Normalize Score').item.json.fraud_score, \"decision\": $('Normalize Score').item.json.decision, \"timestamp\": $now.toISO() } }}",
+        "options": {}
+      },
+      "id": "log-decision",
+      "name": "Log Decision (Governance)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2000, 400]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"transaction_id\": $('Normalize Score').item.json.transaction_id, \"decision\": $('Normalize Score').item.json.decision } }}",
+        "options": {}
+      },
+      "id": "respond-webhook",
+      "name": "Respond to Caller",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2220, 400]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": { "__rl": true, "mode": "name", "value": "fraud-analyst-queue" },
+        "text": "=High-risk transaction {{ $('Normalize Score').item.json.transaction_id }} auto-blocked (score {{ $('Normalize Score').item.json.fraud_score }}). Please review.",
+        "otherOptions": {}
+      },
+      "id": "notify-analyst",
+      "name": "Notify Analyst (Slack)",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [1780, 660]
+    },
+    {
+      "parameters": {},
+      "id": "queue-retraining",
+      "name": "Queue for Model Retraining",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [2000, 660]
+    }
+  ],
+  "connections": {
+    "Transaction Webhook": {
+      "main": [[{ "node": "Parse Incoming Transaction", "type": "main", "index": 0 }]]
+    },
+    "Parse Incoming Transaction": {
+      "main": [[{ "node": "Enrich Customer & Device Data", "type": "main", "index": 0 }]]
+    },
+    "Enrich Customer & Device Data": {
+      "main": [[{ "node": "Fraud Scoring (Classifier + Graph)", "type": "main", "index": 0 }]]
+    },
+    "Fraud Scoring (Classifier + Graph)": {
+      "main": [[{ "node": "Normalize Score", "type": "main", "index": 0 }]]
+    },
+    "Normalize Score": {
+      "main": [[{ "node": "Is High Risk? (>0.7)", "type": "main", "index": 0 }]]
+    },
+    "Is High Risk? (>0.7)": {
+      "main": [
+        [{ "node": "Auto-Block & Freeze Card", "type": "main", "index": 0 }],
+        [{ "node": "Needs Step-Up? (>=0.3)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Needs Step-Up? (>=0.3)": {
+      "main": [
+        [{ "node": "Trigger Step-Up Auth", "type": "main", "index": 0 }],
+        [{ "node": "Auto-Approve Transaction", "type": "main", "index": 0 }]
+      ]
+    },
+    "Auto-Approve Transaction": {
+      "main": [[{ "node": "Log Decision (Governance)", "type": "main", "index": 0 }]]
+    },
+    "Trigger Step-Up Auth": {
+      "main": [[{ "node": "Log Decision (Governance)", "type": "main", "index": 0 }]]
+    },
+    "Auto-Block & Freeze Card": {
+      "main": [
+        [
+          { "node": "Log Decision (Governance)", "type": "main", "index": 0 },
+          { "node": "Notify Analyst (Slack)", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Log Decision (Governance)": {
+      "main": [[{ "node": "Respond to Caller", "type": "main", "index": 0 }]]
+    },
+    "Notify Analyst (Slack)": {
+      "main": [[{ "node": "Queue for Model Retraining", "type": "main", "index": 0 }]]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false,
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}
